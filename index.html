@@ -1,0 +1,180 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VOICE SHIFT</title>
+<style>
+:root{color-scheme:dark;--bg:#07111c;--panel:#101f30;--cyan:#50e5ef;--muted:#9eb5c7}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#123147,var(--bg) 65%);color:#f0fbff;font-family:system-ui,sans-serif;min-height:100vh;padding:24px 15px}
+main{max-width:620px;margin:auto}
+header{text-align:center;padding:20px 0 26px}
+.logo{font-size:12px;letter-spacing:5px;color:var(--cyan)}
+h1{font-size:clamp(32px,8vw,48px);margin:8px 0;letter-spacing:2px}
+.sub{color:var(--muted);font-size:14px}
+.panel{background:#101f30eF;border:1px solid #274357;border-radius:18px;padding:20px;margin:14px 0}
+.status{display:flex;align-items:center;gap:9px;font-size:14px;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:50%;background:#607384}
+.dot.on{background:#50e5a5;box-shadow:0 0 12px #50e5a5}
+button{border:0;border-radius:12px;padding:14px 16px;font-size:15px;font-weight:700;cursor:pointer}
+.primary{width:100%;background:var(--cyan);color:#06151e;margin-top:17px}
+.secondary{background:#20374b;color:white}
+button:disabled{opacity:.45;cursor:default}
+label{display:flex;justify-content:space-between;gap:10px;font-size:14px;margin-bottom:12px}
+output{color:var(--cyan);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--cyan);margin:0 0 22px}
+.toggle{display:flex;align-items:center;justify-content:space-between;margin:16px 0}
+.toggle input{width:20px;height:20px;accent-color:var(--cyan)}
+.meter{height:12px;background:#07111c;border-radius:9px;overflow:hidden;margin:14px 0}
+#meterFill{height:100%;width:0;background:linear-gradient(90deg,#50e5a5,#50e5ef,#ffcd70);transition:width .08s}
+.small{font-size:12px;color:var(--muted);line-height:1.7}
+#message{font-size:13px;line-height:1.6;color:#ffd58c;overflow-wrap:anywhere}
+canvas{width:100%;height:75px;display:block}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="logo">REAL-TIME AUDIO PROCESSOR</div>
+<h1>VOICE SHIFT</h1>
+<div class="sub">WHISPER BOOST / VOICE CONTROL</div>
+</header>
+
+<div class="panel">
+<div class="status"><span class="dot" id="dot"></span><span id="status">STANDBY — マイク停止中</span></div>
+<canvas id="wave" width="560" height="75"></canvas>
+<div class="meter"><div id="meterFill"></div></div>
+<div class="small">入力レベル — マイクに向かって普通に話して確認</div>
+<button class="primary" id="start">START MICROPHONE</button>
+<button class="secondary" id="stop" style="width:100%;margin-top:9px" disabled>STOP</button>
+<div id="message" role="status" aria-live="polite"></div>
+</div>
+
+<div class="panel">
+<h3>VOICE ENGINE</h3>
+<label for="boost">入力増幅 <output id="boostVal">+12 dB</output></label>
+<input id="boost" type="range" min="0" max="24" value="12" step="1">
+
+<label for="comp">音量の均一化 <output id="compVal">12</output></label>
+<input id="comp" type="range" min="1" max="20" value="12" step="1">
+
+<label for="clarity">音声の明瞭度 <output id="clarityVal">50%</output></label>
+<input id="clarity" type="range" min="0" max="100" value="50" step="5">
+
+<label for="volume">モニター音量 <output id="volumeVal">10%</output></label>
+<input id="volume" type="range" min="0" max="60" value="10" step="1">
+
+<div class="toggle"><label for="monitor" style="margin:0">モニター音声をON</label><input id="monitor" type="checkbox"></div>
+<div class="toggle"><label for="noise" style="margin:0">ブラウザのノイズ抑制</label><input id="noise" type="checkbox" checked></div>
+<p class="small">ヘッドホンを使用し、モニター音量を低くしてから開始してください。スピーカーではハウリングが起こることがあります。</p>
+</div>
+<div class="panel">
+<h3>HOW TO USE</h3>
+<p class="small">1. START MICROPHONEを押してマイクを許可。</p>
+<p class="small">2. 小さな声で話し、入力レベルが動くか確認。</p>
+<p class="small">3. モニターをONにし、音量を少しずつ調整。</p>
+<p class="small">4. 増幅と均一化を調整して、聞き取りやすい設定を探します。</p>
+<p class="small">このページは音声を録音・保存・送信しません。加工音声を通話相手へ送る機能もありません。</p>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let ctx=null,stream=null,source=null,analyser=null,raf=0,nodes=[];
+function setMessage(s){$("message").textContent=s}
+function updateLabels(){
+ $("boostVal").textContent="+"+$("boost").value+" dB";
+ $("compVal").textContent=$("comp").value;
+ $("clarityVal").textContent=$("clarity").value+"%";
+ $("volumeVal").textContent=$("volume").value+"%";
+}
+["boost","comp","clarity","volume"].forEach(id=>$(id).addEventListener("input",()=>{updateLabels();applySettings()}));
+$("monitor").addEventListener("change",applySettings);
+updateLabels();
+
+function applySettings(){
+ if(!ctx||nodes.length===0)return;
+ const [hp,gain,compressor,eq,limiter,monitorGain]=nodes;
+ gain.gain.setTargetAtTime(Math.pow(10,Number($("boost").value)/20),ctx.currentTime,.04);
+ compressor.threshold.setTargetAtTime(-40+Number($("comp").value)*1.2,ctx.currentTime,.04);
+ compressor.ratio.setTargetAtTime(1+Number($("comp").value),ctx.currentTime,.04);
+ eq.gain.setTargetAtTime((Number($("clarity").value)-50)*.12,ctx.currentTime,.04);
+ monitorGain.gain.setTargetAtTime($("monitor").checked?Number($("volume").value)/100:0,ctx.currentTime,.04);
+}
+function stopAudio(){
+ cancelAnimationFrame(raf);
+ if(stream)stream.getTracks().forEach(t=>t.stop());
+ if(ctx&&ctx.state!=="closed")ctx.close().catch(()=>{});
+ ctx=null;stream=null;source=null;analyser=null;nodes=[];
+ $("dot").classList.remove("on");
+ $("status").textContent="STANDBY — マイク停止中";
+ $("start").disabled=false;$("stop").disabled=true;
+ $("meterFill").style.width="0%";
+ const c=$("wave").getContext("2d");c.clearRect(0,0,$("wave").width,$("wave").height);
+}
+$("stop").addEventListener("click",stopAudio);
+$("start").addEventListener("click",async()=>{
+ if(ctx)return;
+ $("start").disabled=true;setMessage("マイクに接続しています…");
+ try{
+   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+     throw new Error("このページではマイクAPIを利用できません。HTTPSのGitHub Pages URLを開いているか確認してください。");
+   }
+   stream=await navigator.mediaDevices.getUserMedia({
+     audio:{echoCancellation:true,noiseSuppression:$("noise").checked,autoGainControl:false}
+   });
+   ctx=new (window.AudioContext||window.webkitAudioContext)();
+   await ctx.resume();
+   source=ctx.createMediaStreamSource(stream);
+   analyser=ctx.createAnalyser();analyser.fftSize=1024;
+   const hp=ctx.createBiquadFilter();hp.type="highpass";hp.frequency.value=100;
+   const gain=ctx.createGain();
+   const compressor=ctx.createDynamicsCompressor();
+   compressor.attack.value=.005;compressor.release.value=.15;compressor.knee.value=8;
+   const eq=ctx.createBiquadFilter();eq.type="peaking";eq.frequency.value=2500;eq.Q.value=1;
+   const limiter=ctx.createDynamicsCompressor();
+   limiter.threshold.value=-6;limiter.knee.value=0;limiter.ratio.value=20;
+   limiter.attack.value=.003;limiter.release.value=.12;
+   const monitorGain=ctx.createGain();
+   source.connect(analyser);
+   source.connect(hp);hp.connect(gain);gain.connect(compressor);
+   compressor.connect(eq);eq.connect(limiter);limiter.connect(monitorGain);
+   monitorGain.connect(ctx.destination);
+   nodes=[hp,gain,compressor,eq,limiter,monitorGain];
+   applySettings();
+   $("dot").classList.add("on");
+   $("status").textContent="LIVE — マイク動作中";
+   $("stop").disabled=false;setMessage("マイク接続成功。ヘッドホンを使い、モニター音量を低く保ってください。");
+   draw();
+ }catch(e){
+   stopAudio();
+   const errors={
+    NotAllowedError:"マイクが拒否されました。ブラウザとOSのマイク権限を確認してください。",
+    NotFoundError:"マイクが見つかりません。接続と入力デバイスを確認してください。",
+    NotReadableError:"マイクを利用できません。他のアプリを閉じて再試行してください。",
+    SecurityError:"セキュリティ制限でマイクを使えません。HTTPSの公開URLを開いてください。"
+   };
+   setMessage((errors[e.name]||"マイクを開始できませんでした。")+" ["+(e.name||"Error")+": "+e.message+"]");
+   console.error("VOICE SHIFT microphone error:",e);
+ }
+});
+function draw(){
+ if(!analyser||!ctx)return;
+ const data=new Uint8Array(analyser.fftSize);
+ analyser.getByteTimeDomainData(data);
+ let sum=0;for(const x of data){const v=(x-128)/128;sum+=v*v}
+ const rms=Math.sqrt(sum/data.length);
+ $("meterFill").style.width=Math.min(100,rms*350)+"%";
+ const c=$("wave"),g=c.getContext("2d"),w=c.width,h=c.height;
+ g.clearRect(0,0,w,h);g.strokeStyle="#50e5ef";g.lineWidth=2;g.beginPath();
+ for(let i=0;i<data.length;i++){
+   const x=i/(data.length-1)*w,y=data[i]/255*h;
+   if(i===0)g.moveTo(x,y);else g.lineTo(x,y);
+ }
+ g.stroke();raf=requestAnimationFrame(draw);
+}
+window.addEventListener("pagehide",stopAudio);
+</script>
+</body>
+</html>
